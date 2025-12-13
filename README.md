@@ -2,7 +2,7 @@
 
 🚀 **Software Development Engineer | Data Engineer**  
 🎓 MS in Computer Science @ NC State University (May 2025)  
-📍 Raleigh, NC, USA  
+📍 United States  
 
 <img src="https://github-readme-stats.vercel.app/api/top-langs/?username=divitkalathil&theme=tokyonight&layout=compact&hide=makefile,html,css&hide_border=true"/>
 
