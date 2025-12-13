@@ -4,7 +4,7 @@
 🎓 MS in Computer Science @ NC State University (May 2025)  
 📍 Raleigh, NC, USA  
 
-<img align="center" src="https://github-readme-stats.vercel.app/api/top-langs/?username=divitkalathil&theme=tokyonight&show_icons=true&hide_border=true&layout=compact" />
+<img src="https://github-readme-stats.vercel.app/api/top-langs/?username=divitkalathil&theme=tokyonight&layout=compact&hide=makefile,html,css&hide_border=true"/>
 
 ## 🔧 Tech Stack  
 **Languages:** Java, Python, C++, JavaScript, TypeScript  
