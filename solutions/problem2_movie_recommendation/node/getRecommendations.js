@@ -14,12 +14,8 @@ export const getRecommendations = async (req, res) => {
     const watchedMovies = userRatings.filter((r) => r.watched);
     const ratedMovies = userRatings.filter((r) => r.rating >= 1);
 
-    const relevantWatchedMovies = watchedMovies.filter((watched) => {
-      const ratingEntry = ratedMovies.find(
-        (rated) => rated.movieId._id.toString() === watched.movieId._id.toString()
-      );
-      return !ratingEntry || ratingEntry.rating >= 6;
-    });
+    // A movie that is both watched and rated is driven by its rating (rated signal takes precedence).
+    const relevantWatchedMovies = watchedMovies.filter((watched) => !(watched.rating >= 1));
 
     if (watchedMovies.length === 0 && ratedMovies.length === 0) {
       return res.json({
@@ -47,7 +43,7 @@ export const getRecommendations = async (req, res) => {
         similarMovies = await Movie.find({
           _id: { $ne: movie._id },
           genre: { $nin: movie.genre },
-          rating: { $lte: 7.0 },
+          rating: { $gte: 7.0 },
         }).limit(30);
       }
 
@@ -98,7 +94,6 @@ export const getRecommendations = async (req, res) => {
           score: totalScore,
           source: 'watched',
           sourceMovie: movie.title,
-          userRating: watchedRating.rating || null,
         };
       });
 
@@ -136,7 +131,7 @@ export const getRecommendations = async (req, res) => {
       score: rec.score,
       source: rec.source,
       sourceMovie: rec.sourceMovie,
-      userRating: rec.userRating,
+      ...(rec.source === 'rated' && { userRating: rec.userRating }),
     }));
 
     if (formattedRecommendations.length !== 0) {
@@ -147,7 +142,8 @@ export const getRecommendations = async (req, res) => {
     }
 
     res.json({
-      message: 'No recommendations found',
+      message:
+        'No recommendations found. Try rating more movies or marking some as watched to help us understand your preferences better!',
       recommendations: [],
     });
   } catch (error) {
