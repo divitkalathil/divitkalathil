@@ -1,104 +1,128 @@
-// Drop-in replacement for `getRecommendations` in backend/controllers/ratingController.js.
-// Assumes the existing models: Movie { title, year, rating, genre, description,
-// popularity, type } and Rating { movieId, userId, rating?, watched }.
+// Fixed `getRecommendations` for backend/controllers/ratingController.js.
+// Replace the existing function (from `export const getRecommendations` to its closing `};`).
+// Relies on the imports already at the top of ratingController.js:
+//   import Rating from '../models/Rating.js';
+//   import Movie from '../models/Movie.js';
 
 import Movie from '../models/Movie.js';
 import Rating from '../models/Rating.js';
 
-const HIGH_RATING_THRESHOLD = 5;
-const MIN_MOVIE_RATING = 7.0;
-const BOOST = 1.2;
-const LIMIT = 10;
-
-const toGenres = (genre) =>
-  (Array.isArray(genre) ? genre : String(genre ?? '').split(','))
-    .map((g) => g.trim().toLowerCase())
-    .filter(Boolean);
-
-const sharesGenre = (a, b) => a.some((g) => b.includes(g));
-
-const hasRating = (entry) => entry.rating !== undefined && entry.rating !== null;
-
-/**
- * Pure ranking step.
- * @param {Array} activity  user's Rating docs, each with `movieId` populated or joined as `movie`
- * @param {Array} candidates movies with rating >= 7.0
- */
-export const rankRecommendations = (activity, candidates) => {
-  const seen = new Set(activity.map((a) => String(a.movie._id)));
-  const best = new Map();
-
-  for (const entry of activity) {
-    const sourceGenres = toGenres(entry.movie.genre);
-    const rated = hasRating(entry);
-    if (!rated && !entry.watched) continue;
-
-    const ratedHigh = rated && entry.rating > HIGH_RATING_THRESHOLD;
-    const wantSimilar = !rated || ratedHigh;
-    const multiplier = ratedHigh ? BOOST : 1;
-    const source = rated ? 'rated' : 'watched';
-
-    for (const movie of candidates) {
-      const id = String(movie._id);
-      if (seen.has(id) || movie.rating < MIN_MOVIE_RATING) continue;
-
-      const similar = sharesGenre(toGenres(movie.genre), sourceGenres);
-      if (similar !== wantSimilar) continue;
-
-      const score = Math.round(movie.rating * multiplier * 100) / 100;
-      const current = best.get(id);
-      const better =
-        !current ||
-        score > current.score ||
-        (score === current.score && current.source !== 'rated' && source === 'rated');
-      if (better) {
-        best.set(id, {
-          movie,
-          score,
-          source,
-          sourceMovie: entry.movie.title,
-          userRating: rated ? entry.rating : null,
-        });
-      }
-    }
-  }
-
-  // A movie similar to a low-rated movie must never be recommended, even if
-  // another entry would otherwise suggest it.
-  const dislikedGenres = activity
-    .filter((a) => hasRating(a) && a.rating <= HIGH_RATING_THRESHOLD)
-    .flatMap((a) => toGenres(a.movie.genre));
-  const likedGenres = activity
-    .filter((a) => !hasRating(a) ? a.watched : a.rating > HIGH_RATING_THRESHOLD)
-    .flatMap((a) => toGenres(a.movie.genre));
-
-  return [...best.values()]
-    .filter((rec) => {
-      const genres = toGenres(rec.movie.genre);
-      return !sharesGenre(genres, dislikedGenres) || sharesGenre(genres, likedGenres);
-    })
-    .sort((a, b) => b.score - a.score || b.movie.rating - a.movie.rating || a.movie.title.localeCompare(b.movie.title))
-    .slice(0, LIMIT);
-};
-
 export const getRecommendations = async (req, res) => {
   try {
     const userId = req.userId;
+    const userRatings = await Rating.find({ userId }).populate('movieId');
+    const watchedMovies = userRatings.filter((r) => r.watched);
+    const ratedMovies = userRatings.filter((r) => r.rating >= 1);
 
-    const userRatings = await Rating.find({ userId }).populate('movieId').lean();
-    const activity = userRatings
-      .filter((r) => r.movieId && (r.watched || hasRating(r)))
-      .map((r) => ({ ...r, movie: r.movieId }));
+    const relevantWatchedMovies = watchedMovies.filter((watched) => {
+      const ratingEntry = ratedMovies.find(
+        (rated) => rated.movieId._id.toString() === watched.movieId._id.toString()
+      );
+      return !ratingEntry || ratingEntry.rating >= 6;
+    });
 
-    if (activity.length === 0) {
+    if (watchedMovies.length === 0 && ratedMovies.length === 0) {
       return res.json({
-        message: 'Start exploring movies by rating them or marking them as watched.',
+        message:
+          'Start exploring movies by rating them or marking them as watched to get personalized recommendations!',
         recommendations: [],
       });
     }
 
-    const candidates = await Movie.find({ rating: { $gte: MIN_MOVIE_RATING } }).lean();
-    const recommendations = rankRecommendations(activity, candidates);
+    let recommendations = [];
+
+    for (const ratedMovie of ratedMovies) {
+      const movie = ratedMovie.movieId;
+      if (!movie) continue;
+
+      let similarMovies;
+
+      if (ratedMovie.rating >= 6) {
+        similarMovies = await Movie.find({
+          _id: { $ne: movie._id },
+          genre: { $in: movie.genre },
+          rating: { $gte: 7.0 },
+        }).limit(30);
+      } else {
+        similarMovies = await Movie.find({
+          _id: { $ne: movie._id },
+          genre: { $nin: movie.genre },
+          rating: { $lte: 7.0 },
+        }).limit(30);
+      }
+
+      const scoredMovies = similarMovies.map((similarMovie) => {
+        let score = similarMovie.rating / 10;
+
+        if (ratedMovie.rating >= 6) {
+          const genreMatches = movie.genre.filter((g) =>
+            similarMovie.genre.includes(g)
+          ).length;
+          const genreScore = genreMatches / Math.max(movie.genre.length, 1);
+          score = genreScore * 0.7 + score * 0.3;
+          score *= 1.2;
+        }
+
+        return {
+          movie: similarMovie,
+          score: score,
+          source: 'rated',
+          sourceMovie: movie.title,
+          userRating: ratedMovie.rating,
+        };
+      });
+
+      recommendations.push(...scoredMovies);
+    }
+
+    for (const watchedRating of relevantWatchedMovies) {
+      const movie = watchedRating.movieId;
+      if (!movie) continue;
+
+      const similarMovies = await Movie.find({
+        _id: { $ne: movie._id },
+        genre: { $in: movie.genre },
+        rating: { $gte: 7.0 },
+      }).limit(50);
+
+      const scoredMovies = similarMovies.map((similarMovie) => {
+        const genreMatches = movie.genre.filter((g) =>
+          similarMovie.genre.includes(g)
+        ).length;
+        const genreScore = genreMatches / Math.max(movie.genre.length, 1);
+        const ratingScore = similarMovie.rating / 10;
+        const totalScore = genreScore * 0.7 + ratingScore * 0.3;
+
+        return {
+          movie: similarMovie,
+          score: totalScore,
+          source: 'watched',
+          sourceMovie: movie.title,
+          userRating: watchedRating.rating || null,
+        };
+      });
+
+      recommendations.push(...scoredMovies);
+    }
+
+    // One entry per movie: higher score wins; on a tie the rated signal beats watched.
+    const bestByMovie = new Map();
+    for (const rec of recommendations) {
+      if (!rec.movie || rec.movie.rating < 7.0) continue;
+      const key = rec.movie._id.toString();
+      const existing = bestByMovie.get(key);
+      if (
+        !existing ||
+        rec.score > existing.score ||
+        (rec.score === existing.score && rec.source === 'rated' && existing.source !== 'rated')
+      ) {
+        bestByMovie.set(key, rec);
+      }
+    }
+
+    recommendations = [...bestByMovie.values()]
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 10);
 
     const formattedRecommendations = recommendations.map((rec) => ({
       _id: rec.movie._id,
